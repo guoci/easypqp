@@ -536,8 +536,10 @@ def annotate_mass_spectrum(ionseries, max_delta_ppm, spectrum):
 
 
 def generate_ionseries(peptide_sequence, precursor_charge, fragment_charges=[1,2,3,4], fragment_types=['b','y'], enable_specific_losses = False, enable_unspecific_losses = False):
-	peptide = po.AASequence.fromString(po.String(peptide_sequence))
-	sequence = peptide.toUnmodifiedString()
+	try:
+		peptide = po.AASequence.fromString(po.String(peptide_sequence))
+	except RuntimeError:
+		...
 
 	unspecific_losses = ["H2O1","H3N1","C1H2N2","C1H2N1O1"]
 
@@ -546,7 +548,7 @@ def generate_ionseries(peptide_sequence, precursor_charge, fragment_charges=[1,2
 	for fragment_type in fragment_types:
 		for fragment_charge in fragment_charges:
 			if fragment_charge <= precursor_charge:
-				for fragment_ordinal in range(1,len(sequence)):
+				for fragment_ordinal in range(1, peptide.size()):
 					mass = ion = None
 					if fragment_type == 'a':
 						ion = peptide.getPrefix(fragment_ordinal)
