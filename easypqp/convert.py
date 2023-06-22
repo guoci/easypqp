@@ -638,25 +638,35 @@ def generate_ionseries(peptide_sequence, precursor_charge, fragment_charges=[1,2
 
 	return np.array(list(fragments.keys())), np.fromiter(fragments.values(), float, len(fragments))
 
+def parse_pepxmls(pepxmlfile_list, um, base_name, exclude_range, enable_unannotated, enable_massdiff, fragment_charges, fragment_types, enable_specific_losses, enable_unspecific_losses):
+	psmslist = []
+	for pepxmlfile in pepxmlfile_list:
+		if pepxmlfile.casefold().endswith(('.pepxml', '.pep.xml')):
+			click.echo(f"Info: Parsing pepXML: {pepxmlfile}")
+			px = pepxml(pepxmlfile, um, base_name, exclude_range, enable_unannotated, enable_massdiff)
+		elif pepxmlfile.lower().endswith('idxml'):
+			click.echo(f"Info: Parsing idXML: {pepxmlfile}")
+			px = idxml(pepxmlfile, base_name)
+		else:
+			click.echo('unknown format of pepxml identification file')
+		psms = px.get()
+		rank = re.compile(r'_rank([0-9]+)\.').search(pathlib.Path(pepxmlfile).name)
+		rank_str = '' if rank is None else '_rank' + rank.group(1)
+		psms['group_id'] = psms['run_id'] + "_" + psms['scan_id'].astype(str) + rank_str
+		click.echo(f"Info: Done parsing pepXML: {pepxmlfile}")
+		psmslist.append(psms)
+	psms = pd.concat(psmslist)
+	theoretical = None
+	if psms.shape[0] > 0:
+		# Generate theoretical spectra
+		click.echo("Info: Generate theoretical spectra.")
+		theoretical = {}
+		for modified_peptide, precursor_charge in psms[['modified_peptide','precursor_charge']].drop_duplicates().itertuples(index=False):
+			theoretical.setdefault(modified_peptide, {})[precursor_charge] = generate_ionseries(modified_peptide, precursor_charge, fragment_charges, fragment_types, enable_specific_losses, enable_unspecific_losses)
+	return psms, theoretical
 
-def parse_pepxml(args: str) -> pd.DataFrame:
-	pepxmlfile, um, base_name, exclude_range, enable_unannotated, enable_massdiff = args
-	if pepxmlfile.casefold().endswith(('.pepxml', '.pep.xml')):
-		click.echo(f"Info: Parsing pepXML: {pepxmlfile}")
-		px = pepxml(pepxmlfile, um, base_name, exclude_range, enable_unannotated, enable_massdiff)
-	elif pepxmlfile.lower().endswith('idxml'):
-		click.echo(f"Info: Parsing idXML: {pepxmlfile}")
-		px = idxml(pepxmlfile, base_name)
-	else:
-		click.echo('unknown format of pepxml identification file')
-	psms = px.get()
-	rank = re.compile(r'_rank([0-9]+)\.').search(pathlib.Path(pepxmlfile).name)
-	rank_str = '' if rank is None else '_rank' + rank.group(1)
-	psms['group_id'] = psms['run_id'] + "_" + psms['scan_id'].astype(str) + rank_str
-	click.echo(f"Info: Done parsing pepXML: {pepxmlfile}")
-	return psms
 
-def get_map_mzml_or_mzxml(path:str, filetype):
+def get_map_mzml_or_mzxml(path: str, filetype):
 	assert filetype in ('mzml', 'mzxml')
 	fh = po.MzMLFile() if filetype=='mzml' else po.MzXMLFile()
 	fh.setLogType(po.LogType.CMD)
@@ -672,42 +682,39 @@ def conversion(pepxmlfile_list, spectralfile, unimodfile, exclude_range, max_del
 
 	# Initialize UniMod
 	um = unimod(unimodfile, max_delta_unimod)
-# OMP_NUM_THREADS=3 \time -v /storage/teog/anaconda3_easypqp/bin/python -m cProfile -o program.prof /storage/teog/anaconda3_easypqp/bin/easypqp  convert --max_delta_unimod 0.02 --max_delta_ppm 15.0 --enable_unannotated --pepxml '['"'"'interact-20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1_rank1.pep.xml'"'"', '"'"'interact-20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1_rank2.pep.xml'"'"', '"'"'interact-20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1_rank3.pep.xml'"'"', '"'"'interact-20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1_rank4.pep.xml'"'"', '"'"'interact-20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1_rank5.pep.xml'"'"']' --spectra 20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1.mzML --exclude-range -1.5,3.5 --psms 20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1.psmpkl  --peaks 20230404_OLEP08_EV_1ug_MB_60min_AS_15ms_4Th_1.peakpkl
 	import concurrent.futures
 
-	exe = concurrent.futures.ProcessPoolExecutor(5)
+	exe = concurrent.futures.ProcessPoolExecutor(1)
+	psms_fut = exe.submit(parse_pepxmls, pepxmlfile_list, um, base_name, exclude_range, enable_unannotated, enable_massdiff, fragment_charges, fragment_types, enable_specific_losses, enable_unspecific_losses)
+	time.sleep(1)  # allow the process to execute first before using pyOpenMS to read files
 	if spectralfile.lower().endswith(".mzxml"):
-		input_map = exe.submit(get_map_mzml_or_mzxml, spectralfile, 'mzxml')
+		input_map = get_map_mzml_or_mzxml(spectralfile, 'mzxml')
 	elif spectralfile.casefold().endswith(".mzml"):
-		input_map = exe.submit(get_map_mzml_or_mzxml, spectralfile, 'mzml')
+		input_map = get_map_mzml_or_mzxml(spectralfile, 'mzml')
 	else:
-		input_map = concurrent.futures.Future()
-		input_map.set_result(None)
-	psms = exe.map(parse_pepxml, [(pepxmlfile, um, base_name, exclude_range, enable_unannotated, enable_massdiff)
-									   for pepxmlfile in pepxmlfile_list])
+		input_map = None
 
-	psms = pd.concat(list(psms))
+
 	# if spectralfile.lower().endswith(".mzxml"):
 	# 	input_map = get_map_mzml_or_mzxml(spectralfile, 'mzxml')
 	# elif spectralfile.casefold().endswith(".mzml"):
 	# 	input_map = get_map_mzml_or_mzxml(spectralfile, 'mzml')
 
-	# input_map = fut.result()
-	# tpexe.shutdown()
 	# Continue if any PSMS are present
+	psms, theoretical = psms_fut.result()
+	exe.shutdown()
 	if psms.shape[0] > 0:
 		run_id = basename_spectralfile(spectralfile)
 
 		# Generate theoretical spectra
-		click.echo("Info: Generate theoretical spectra.")
-		theoretical = {}
-		for modified_peptide, precursor_charge in psms[['modified_peptide','precursor_charge']].drop_duplicates().itertuples(index=False):
-			theoretical.setdefault(modified_peptide, {})[precursor_charge] = generate_ionseries(modified_peptide, precursor_charge, fragment_charges, fragment_types, enable_specific_losses, enable_unspecific_losses)
+		# click.echo("Info: Generate theoretical spectra.")
+		# theoretical = {}
+		# for modified_peptide, precursor_charge in psms[['modified_peptide','precursor_charge']].drop_duplicates().itertuples(index=False):
+		# 	theoretical.setdefault(modified_peptide, {})[precursor_charge] = generate_ionseries(modified_peptide, precursor_charge, fragment_charges, fragment_types, enable_specific_losses, enable_unspecific_losses)
 
 		# Generate spectrum dataframe
 		click.echo("Info: Processing spectra from file %s." % spectralfile)
 		psms = psms[psms['pep'] <= max_psm_pep]
-		input_map = input_map.result()
 		if spectralfile.lower().endswith(".mzxml"):
 			peaks = read_mzml_or_mzxml_impl(input_map, psms[['scan_id','modified_peptide','precursor_charge']], theoretical, max_delta_ppm, 'mzxml')
 		elif spectralfile.casefold().endswith(".mzml"):
