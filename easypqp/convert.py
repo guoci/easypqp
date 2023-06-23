@@ -576,7 +576,33 @@ def annotate_mass_spectrum(ionseries, max_delta_ppm, spectrum):
 	idx_mask = (ppms < min(max_delta_ppm, top_delta)).any(1)
 	idx = ppms[idx_mask].argmin(1)
 	return ions[idx], ion_masses[idx], intensities0[idx_mask]
-
+'''
+import numba
+@numba.jit(nopython=True, nogil=True)
+def annotate_mass_spectrum_numba(ionseries, max_delta_ppm, spectrum):
+  top_delta = 30
+  ions, ion_masses = ionseries
+  mzs0, intensities0 = spectrum
+  ret = np.zeros_like(ion_masses, dtype=np.bool_)
+  for si, mz in enumerate(mzs0):
+    # ppms_ions = []
+    min_ion_idx = -1
+    min_ppm = top_delta
+    for ii, ion_mass in enumerate(ion_masses):
+      ppm = np.abs(mz - ion_mass) / ion_mass * 1e6
+      if ppm < min(max_delta_ppm, top_delta):
+        #print(si, ii, ppm)
+        # ppms_ions.append((ii, ppm))
+        if ppm < min_ppm:
+          min_ppm = ppm
+          min_ion_idx = ii
+    if min_ion_idx != -1:
+      # print(ppms_ions)
+      # print(min_ion_idx)
+      #ret.append(min_ion_idx)
+      ret[min_ion_idx]=True
+  return ret
+'''
 
 
 def generate_ionseries(peptide_sequence, precursor_charge, fragment_charges=[1,2,3,4], fragment_types=['b','y'], enable_specific_losses = False, enable_unspecific_losses = False):
