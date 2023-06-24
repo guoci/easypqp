@@ -530,6 +530,7 @@ def psm_df(input_map, theoretical, max_delta_ppm, scan_id, modified_peptide, pre
 	spectrum = input_map[scan_id]
 
 	fragments, product_mzs, intensities = annotate_mass_spectrum(ionseries, max_delta_ppm, spectrum)
+	# annotate_mass_spectrum_numba(ionseries, max_delta_ppm, spectrum)
 	# Baseline normalization to highest annotated peak
 	max_intensity = np.amax(intensities, initial=0.0)
 	if max_intensity > 0:
@@ -580,28 +581,24 @@ def annotate_mass_spectrum(ionseries, max_delta_ppm, spectrum):
 import numba
 @numba.jit(nopython=True, nogil=True)
 def annotate_mass_spectrum_numba(ionseries, max_delta_ppm, spectrum):
-  top_delta = 30
-  ions, ion_masses = ionseries
-  mzs0, intensities0 = spectrum
-  ret = np.zeros_like(ion_masses, dtype=np.bool_)
-  for si, mz in enumerate(mzs0):
-    # ppms_ions = []
-    min_ion_idx = -1
-    min_ppm = top_delta
-    for ii, ion_mass in enumerate(ion_masses):
-      ppm = np.abs(mz - ion_mass) / ion_mass * 1e6
-      if ppm < min(max_delta_ppm, top_delta):
-        #print(si, ii, ppm)
-        # ppms_ions.append((ii, ppm))
-        if ppm < min_ppm:
-          min_ppm = ppm
-          min_ion_idx = ii
-    if min_ion_idx != -1:
-      # print(ppms_ions)
-      # print(min_ion_idx)
-      #ret.append(min_ion_idx)
-      ret[min_ion_idx]=True
-  return ret
+    top_delta = 30
+    ions, ion_masses = ionseries
+    mzs0, intensities0 = spectrum
+    idx_ions = np.zeros_like(ion_masses, dtype=np.bool_)
+    idx_peaks = np.zeros_like(intensities0, dtype=np.bool_)
+    for si, mz in enumerate(mzs0):
+        min_ion_idx = -1
+        min_ppm = top_delta
+        for ii, ion_mass in enumerate(ion_masses):
+            ppm = np.abs(mz - ion_mass) / ion_mass * 1e6
+            if ppm < min(max_delta_ppm, top_delta):
+                if ppm < min_ppm:
+                    min_ppm = ppm
+                    min_ion_idx = ii
+        if min_ion_idx != -1:
+            idx_ions[min_ion_idx]=True
+            idx_peaks[si]=True
+    return idx_ions, idx_peaks
 '''
 
 
@@ -693,12 +690,20 @@ def parse_pepxmls(pepxmlfile_list, um, base_name, exclude_range, enable_unannota
 
 
 def get_map_mzml_or_mzxml(path: str, filetype):
+	# breakpoint()
+	# print(time.time())
+	# od_exp = po.OnDiscMSExperiment()
+	# od_exp.setSkipXMLChecks()
+	# od_exp.openFile(path)
+	# print(time.time())
+	# od_exp
 	assert filetype in ('mzml', 'mzxml')
 	fh = po.MzMLFile() if filetype=='mzml' else po.MzXMLFile()
 	fh.setLogType(po.LogType.CMD)
 	input_map = po.MSExperiment()
 	fh.load(path, input_map)
 	return [(e.getNativeID(), e.get_peaks()) for e in input_map]
+
 
 def conversion(pepxmlfile_list, spectralfile, unimodfile, exclude_range, max_delta_unimod, max_delta_ppm, enable_unannotated, enable_massdiff, fragment_types, fragment_charges, enable_specific_losses, enable_unspecific_losses, max_psm_pep):
 	# Parse basename
